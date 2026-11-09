@@ -1061,6 +1061,12 @@
           ]
         },
         {
+          "key": "ui.goto_marker",
+          "type": "string",
+          "default": "\"◆ \"",
+          "description": "Marker drawn before the focused row in the Go to navigator. The value is drawn verbatim, so include its own trailing space; an empty value hides it. Control characters are dropped and the marker is capped at 4 display columns."
+        },
+        {
           "key": "ui.sidebar.agents.row_gap",
           "type": "integer",
           "default": "0",

@@ -2958,6 +2958,61 @@ fn collapsed_aggregate_workspace_status_uses_its_status_color() {
 }
 
 #[test]
+fn navigator_h_and_l_move_between_workspace_sections() {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.open_navigator_overlay();
+    for (key, expected_endpoint) in [
+        (KeyCode::Char('l'), endpoint_id),
+        (KeyCode::Char('h'), ClientEndpointId::Local),
+    ] {
+        let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
+            crate::input::TerminalKey::new(key, KeyModifiers::empty()),
+        )]);
+        assert!(outcome.actions.is_empty());
+        let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
+            panic!("navigator");
+        };
+        assert_eq!(
+            navigator.selected,
+            Some(ClientNavigatorTarget::Pane {
+                endpoint_id: expected_endpoint,
+                pane_id: "pane_1".into(),
+            })
+        );
+    }
+}
+
+#[test]
+fn navigator_h_and_l_type_into_the_search_box() {
+    let (mut state, _) = state_with_remote();
+    state.open_navigator_overlay();
+    let press = |state: &mut ClientShellState, key: KeyCode| {
+        state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+            key,
+            KeyModifiers::empty(),
+        ))]);
+    };
+    press(&mut state, KeyCode::Char('/'));
+    let selected_before = match state.overlay.as_ref().expect("navigator") {
+        ClientShellOverlay::Navigator(navigator) => {
+            assert!(navigator.search_focused);
+            navigator.selected.clone()
+        }
+        _ => panic!("navigator"),
+    };
+    press(&mut state, KeyCode::Char('h'));
+    press(&mut state, KeyCode::Char('l'));
+    let ClientShellOverlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator")
+    else {
+        panic!("navigator");
+    };
+    assert_eq!(navigator.query.as_str(), "hl");
+    // Typing a query clears the explicit selection instead of moving it.
+    assert_eq!(navigator.selected, None);
+    assert!(selected_before.is_some());
+}
+
+#[test]
 fn navigator_workspace_arrows_cross_machine_headings_without_activating_them() {
     let (mut state, endpoint_id) = state_with_remote();
     state.open_navigator_overlay();
@@ -3019,4 +3074,61 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
             target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
         }] if activated == &endpoint_id && workspace_id == "ws_1"
     ));
+}
+
+#[test]
+fn navigator_x_refuses_a_row_on_another_machine() {
+    let (mut state, _) = state_with_remote();
+    state.open_navigator_overlay();
+    let press = |state: &mut ClientShellState, key: KeyCode| {
+        state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+            key,
+            KeyModifiers::empty(),
+        ))])
+    };
+    press(&mut state, KeyCode::Char('l'));
+    for _ in 0..2 {
+        let closed = press(&mut state, KeyCode::Char('x'));
+        assert!(!closed.actions.iter().any(|action| matches!(
+            action,
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(
+                    request.method,
+                    crate::api::schema::Method::PaneClose(_)
+                        | crate::api::schema::Method::WorkspaceClose(_)
+                )
+        )));
+        assert!(matches!(
+            state.overlay,
+            Some(ClientShellOverlay::Navigator(_))
+        ));
+        let notice = state
+            .visible_endpoint_notice
+            .as_ref()
+            .expect("refusal notice");
+        assert_eq!(notice.title, "Close needs the active machine");
+    }
+}
+
+#[test]
+fn navigator_x_on_a_machine_heading_reports_that_it_needs_a_row() {
+    let (mut state, _) = state_with_remote();
+    state.open_navigator_overlay();
+    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        navigator.selected = Some(ClientNavigatorTarget::Machine {
+            endpoint_id: ClientEndpointId::Local,
+        });
+    }
+    let closed = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('x'),
+        KeyModifiers::empty(),
+    ))]);
+    assert!(closed.actions.is_empty());
+    assert_eq!(
+        state
+            .visible_endpoint_notice
+            .as_ref()
+            .map(|notice| notice.title.as_str()),
+        Some("Close needs a terminal or workspace row")
+    );
 }

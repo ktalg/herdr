@@ -25,6 +25,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
+    pub(super) goto_marker: String,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,
     pub(super) toast_delay_seconds: u64,
@@ -360,7 +361,7 @@ pub(super) struct ClientNavigatorRow {
     pub(super) target: ClientNavigatorTarget,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct ClientNavigatorOverlay {
     pub(super) query: TextEditor,
     pub(super) search_focused: bool,
@@ -577,6 +578,8 @@ pub(super) struct ClientConfirmCloseOverlay {
     pub(super) tab_target: Option<ClientTabCloseConfirmation>,
     pub(super) title: String,
     pub(super) detail: String,
+    /// Pickers state captured when the confirmation replaced the Go to navigator.
+    pub(super) navigator_return: Option<Box<ClientNavigatorOverlay>>,
 }
 
 #[derive(Debug)]

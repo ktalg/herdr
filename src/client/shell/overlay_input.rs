@@ -279,8 +279,8 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn accept_navigator_selection(&mut self, outcome: &mut ClientShellInput) {
-        let target = self.overlay.as_ref().and_then(|overlay| match overlay {
+    fn navigator_target(&self) -> Option<ClientNavigatorTarget> {
+        self.overlay.as_ref().and_then(|overlay| match overlay {
             ClientShellOverlay::Navigator(navigator) => {
                 let rows = render::client_navigator_rows(
                     &self.endpoints,
@@ -290,8 +290,67 @@ impl ClientShellState {
                 super::aggregate_navigation::selected_navigator_target(&rows, navigator)
             }
             _ => None,
-        });
-        let Some(target) = target else {
+        })
+    }
+
+    /// Close the terminal or workspace under the navigator cursor. The row has to
+    /// belong to the active machine, because closes use the focused snapshot; a
+    /// remote row is refused instead of silently closing a same-named local one.
+    pub(super) fn close_navigator_selection(&mut self, outcome: &mut ClientShellInput) {
+        let Some(target) = self.navigator_target() else {
+            return;
+        };
+        let endpoint_id = match &target {
+            ClientNavigatorTarget::Machine { endpoint_id }
+            | ClientNavigatorTarget::Workspace { endpoint_id, .. }
+            | ClientNavigatorTarget::Pane { endpoint_id, .. } => endpoint_id,
+        };
+        let reachable = self.endpoint_is_online(endpoint_id);
+        if *endpoint_id != self.active_endpoint_id || !reachable {
+            let body = if *endpoint_id == self.active_endpoint_id {
+                "This machine is not connected yet; wait for it to reconnect, then press x again"
+            } else {
+                "Press Enter to switch to that machine, then press x there"
+            };
+            self.push_endpoint_notice(
+                ClientEndpointNoticeKind::Rejected,
+                "navigator_close_inactive",
+                "Close needs the active machine",
+                body,
+            );
+            outcome.repaint = true;
+            return;
+        }
+        let requested = match target {
+            ClientNavigatorTarget::Machine { .. } => false,
+            ClientNavigatorTarget::Workspace { workspace_id, .. } => {
+                self.request_workspace_close(workspace_id, None, outcome);
+                true
+            }
+            ClientNavigatorTarget::Pane { pane_id, .. } => {
+                self.request_pane_close(pane_id, outcome);
+                true
+            }
+        };
+        if !requested {
+            self.push_endpoint_notice(
+                ClientEndpointNoticeKind::Rejected,
+                "navigator_close_machine_row",
+                "Close needs a terminal or workspace row",
+                "Move the cursor to a terminal or workspace row and press x again",
+            );
+            outcome.repaint = true;
+            return;
+        }
+        if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+            // Do not leave the cursor pinned to the row that is going away.
+            navigator.selected = None;
+        }
+        outcome.repaint = true;
+    }
+
+    pub(super) fn accept_navigator_selection(&mut self, outcome: &mut ClientShellInput) {
+        let Some(target) = self.navigator_target() else {
             return;
         };
         let activated = match target {
@@ -685,8 +744,16 @@ impl ClientShellState {
                 }
                 return;
             }
-            if matches!(code, KeyCode::Left | KeyCode::Right) && modifiers.is_empty() {
-                self.move_navigator_workspace(code == KeyCode::Right);
+            if code == KeyCode::Char('x') && modifiers.is_empty() {
+                self.close_navigator_selection(outcome);
+                return;
+            }
+            if matches!(
+                code,
+                KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
+            ) && modifiers.is_empty()
+            {
+                self.move_navigator_workspace(matches!(code, KeyCode::Right | KeyCode::Char('l')));
                 outcome.repaint = true;
                 return;
             }
@@ -892,10 +959,7 @@ impl ClientShellState {
             if key.code == KeyCode::Enter {
                 self.accept_close_confirmation(outcome);
             } else if key.code == KeyCode::Esc {
-                self.overlay = None;
-                self.mode = ClientShellMode::Navigate;
-                self.navigate_workspace_id = self.focused_navigation_target();
-                self.reveal_navigation_workspace = true;
+                self.cancel_close_confirmation(true);
                 outcome.repaint = true;
             }
             return;
@@ -1083,6 +1147,25 @@ impl ClientShellState {
         );
     }
 
+    /// Dismiss a close confirmation. A confirmation that replaced the Go to
+    /// navigator puts that picker back with its search, filter, scroll and
+    /// selection intact; every other confirmation clears the overlay and, from
+    /// the keyboard, falls back to Navigate mode.
+    pub(super) fn cancel_close_confirmation(&mut self, enter_navigate: bool) {
+        if let Some(ClientShellOverlay::ConfirmClose(confirm)) = self.overlay.take() {
+            if let Some(navigator) = confirm.navigator_return {
+                self.overlay = Some(ClientShellOverlay::Navigator(*navigator));
+                return;
+            }
+        }
+        self.overlay = None;
+        if enter_navigate {
+            self.mode = ClientShellMode::Navigate;
+            self.navigate_workspace_id = self.focused_navigation_target();
+            self.reveal_navigation_workspace = true;
+        }
+    }
+
     pub(super) fn accept_close_confirmation(&mut self, outcome: &mut ClientShellInput) {
         let Some(ClientShellOverlay::ConfirmClose(confirm)) = self.overlay.take() else {
             return;
@@ -1110,6 +1193,9 @@ impl ClientShellState {
                 self.receive_endpoint_unavailable(
                     "Close target changed; try closing it again".into(),
                 );
+                if let Some(navigator) = confirm.navigator_return {
+                    self.overlay = Some(ClientShellOverlay::Navigator(*navigator));
+                }
                 return;
             }
             if let Some(pane_id) = target.pane_id {
@@ -1209,6 +1295,11 @@ impl ClientShellState {
         } else {
             panes
         };
+        // Keep the picker so cancelling the confirmation returns to it unchanged.
+        let navigator_return = match self.overlay.as_ref() {
+            Some(ClientShellOverlay::Navigator(navigator)) => Some(Box::new(navigator.clone())),
+            _ => None,
+        };
         self.overlay = Some(ClientShellOverlay::ConfirmClose(
             ClientConfirmCloseOverlay {
                 workspace_id,
@@ -1220,6 +1311,7 @@ impl ClientShellState {
                     "Close workspace?".to_owned()
                 },
                 detail: format!("{} — {scope}", workspace.label),
+                navigator_return,
             },
         ));
         true

@@ -340,6 +340,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # distinct static glyphs for blocked, working, done, idle, and unknown states.
 # status_indicators = "dots"
 
+# Marker drawn before the focused row in the Go to navigator (default "◆ ").
+# The value is drawn verbatim, so include its own trailing space, and "" hides it.
+# Any glyph works, for example "▶️ " or "👉 ".
+# goto_marker = "◆ "
+
 # Accent color for highlights, borders, and navigation UI.
 # Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)
 # accent = "cyan"

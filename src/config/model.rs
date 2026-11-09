@@ -2,11 +2,14 @@ use std::{collections::BTreeSet, num::NonZeroUsize};
 
 use crossterm::event::KeyModifiers;
 use serde::{de, Deserialize, Deserializer, Serialize};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use super::{
     ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
-    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
-    DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_GOTO_MARKER,
+    DEFAULT_MOBILE_WIDTH_THRESHOLD, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    MAX_GOTO_MARKER_WIDTH,
 };
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
@@ -998,6 +1001,11 @@ pub struct UiConfig {
     _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
     /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
     pub status_indicators: StatusIndicatorStyle,
+    /// Marker drawn before the focused row in the Go to navigator. The value is
+    /// drawn verbatim, so include its own trailing space. Set to "" to hide it.
+    /// Control characters are dropped and the marker is capped at 4 columns.
+    /// Default: "◆ ".
+    pub goto_marker: String,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -1226,6 +1234,7 @@ impl Default for UiConfig {
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Dots,
+            goto_marker: DEFAULT_GOTO_MARKER.into(),
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),
@@ -1235,6 +1244,29 @@ impl Default for UiConfig {
 }
 
 impl UiConfig {
+    /// Marker drawn before the focused row in the Go to navigator, without the
+    /// control characters and overlong values a typo could introduce.
+    pub fn goto_marker(&self) -> String {
+        let sanitized = self
+            .goto_marker
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect::<String>();
+        let mut width = 0usize;
+        let mut marker = String::new();
+        // Measure whole grapheme clusters: an emoji presentation sequence such as
+        // "▶️" is two columns wide even though it is two code points, and cutting
+        // one apart would render a stray variation selector.
+        for grapheme in sanitized.graphemes(true) {
+            width += UnicodeWidthStr::width(grapheme);
+            if width > MAX_GOTO_MARKER_WIDTH {
+                break;
+            }
+            marker.push_str(grapheme);
+        }
+        marker
+    }
+
     pub fn mouse_scroll_lines(&self) -> usize {
         self.mouse_scroll_lines
             .map(NonZeroUsize::get)
@@ -1490,6 +1522,36 @@ status_indicators = "symbols"
         )
         .unwrap();
         assert_eq!(config.ui.status_indicators, StatusIndicatorStyle::Symbols);
+    }
+
+    #[test]
+    fn goto_marker_defaults_to_the_diamond_and_parses_a_custom_glyph() {
+        assert_eq!(Config::default().ui.goto_marker(), "◆ ");
+
+        let config: Config = toml::from_str(
+            r#"
+[ui]
+goto_marker = "▶️ "
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.ui.goto_marker(), "▶️ ");
+
+        let hidden: Config = toml::from_str("[ui]\ngoto_marker = \"\"").unwrap();
+        assert_eq!(hidden.ui.goto_marker(), "");
+    }
+
+    #[test]
+    fn goto_marker_drops_control_characters_and_caps_its_width() {
+        let config: Config = toml::from_str("[ui]\ngoto_marker = \"\\t▶\\n\\u001B[0m \"").unwrap();
+        assert_eq!(config.ui.goto_marker(), "▶[0m");
+
+        let wide: Config = toml::from_str("[ui]\ngoto_marker = \"abcdefgh \"").unwrap();
+        assert_eq!(wide.ui.goto_marker(), "abcd");
+
+        let emoji: Config = toml::from_str("[ui]\ngoto_marker = \"▶️▶️▶️ \"").unwrap();
+        assert_eq!(emoji.ui.goto_marker(), "▶️▶️");
+        assert!(unicode_width::UnicodeWidthStr::width(emoji.ui.goto_marker().as_str()) <= 4);
     }
 
     #[test]

@@ -964,6 +964,63 @@ fn navigator_workspace_headings_use_the_active_themes_primary_text() {
 }
 
 #[test]
+fn navigator_marks_only_the_current_row_with_the_configured_marker() {
+    let rows_for = |marker: &str| {
+        let mut config = Config::default();
+        config.ui.goto_marker = marker.into();
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        let mut snapshot = snapshot();
+        let mut shell = snapshot.panes[0].clone();
+        shell.pane_id = "pane_shell".into();
+        shell.label = Some("shell".into());
+        shell.focused = false;
+        snapshot.panes.push(shell);
+        state.set_snapshot(Box::new(snapshot));
+        state.set_pane_surface(surface());
+        state.open_navigator_overlay();
+        let frame = state.compose(106, 30).expect("navigator");
+        state
+            .hits
+            .navigator_rows
+            .iter()
+            .map(|(rect, _)| {
+                frame.cells[rect.y as usize * frame.width as usize + rect.x as usize..]
+                    .iter()
+                    .take(rect.width as usize)
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let default_rows = rows_for("◆ ");
+    assert_eq!(default_rows.len(), 3);
+    assert!(
+        default_rows[1].starts_with(" ├─ ◆ "),
+        "{:?} should hold the default marker",
+        default_rows[1]
+    );
+    assert!(!default_rows[0].contains('◆'));
+    assert!(!default_rows[2].contains('◆'));
+
+    let arrow_rows = rows_for("▶️ ");
+    assert!(
+        arrow_rows[1].starts_with(" ├─ ▶️ "),
+        "{:?} should hold the configured marker",
+        arrow_rows[1]
+    );
+    assert!(!arrow_rows[2].contains('▶'));
+
+    let hidden_rows = rows_for("");
+    assert!(hidden_rows.iter().all(|row| !row.contains('◆')));
+    assert!(
+        hidden_rows[1].starts_with(" ├─ "),
+        "{:?} should drop the marker",
+        hidden_rows[1]
+    );
+}
+
+#[test]
 fn navigator_renders_every_terminal_in_workspace_sections() {
     let mut snapshot = snapshot();
     snapshot.focused_pane_id = None;

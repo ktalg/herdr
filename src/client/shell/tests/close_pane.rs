@@ -290,3 +290,138 @@ fn ordinary_pane_close_stays_immediate_with_another_pane() {
         assert!(state.overlay.is_none());
     }
 }
+
+fn navigator_press(state: &mut ClientShellState, key: KeyCode) -> ClientShellInput {
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Key(
+        crate::input::TerminalKey::new(key, KeyModifiers::empty()),
+    )])
+}
+
+fn open_navigator_close_state(confirm: bool, extra_pane: bool) -> ClientShellState {
+    let mut state = close_state(confirm, 1);
+    if extra_pane {
+        let mut projected = state.snapshot.as_deref().unwrap().clone();
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = "pane_2".into();
+        pane.label = Some("shell".into());
+        pane.focused = false;
+        projected.panes.push(pane);
+        state.set_snapshot(Box::new(projected));
+    }
+    state.open_navigator_overlay();
+    state
+}
+
+#[test]
+fn navigator_x_closes_the_selected_terminal() {
+    let mut state = open_navigator_close_state(false, true);
+    let closed = navigator_press(&mut state, KeyCode::Char('x'));
+    assert_pane_close(&closed);
+}
+
+#[test]
+fn navigator_x_asks_before_closing_the_last_terminal_workspace() {
+    let mut state = open_navigator_close_state(true, false);
+    let requested = navigator_press(&mut state, KeyCode::Char('x'));
+    assert_no_close(&requested);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::ConfirmClose(_))
+    ));
+    let accepted = state.handle_input_bytes(b"\r");
+    assert_pane_close(&accepted);
+}
+
+#[test]
+fn navigator_x_closes_the_selected_workspace() {
+    let mut confirmed = open_navigator_close_state(true, false);
+    navigator_press(&mut confirmed, KeyCode::Up);
+    let requested = navigator_press(&mut confirmed, KeyCode::Char('x'));
+    assert_no_close(&requested);
+    let Some(ClientShellOverlay::ConfirmClose(confirm)) = confirmed.overlay.as_ref() else {
+        panic!("expected workspace close confirmation");
+    };
+    assert_eq!(confirm.title, "Close workspace?");
+
+    let mut immediate = open_navigator_close_state(false, false);
+    navigator_press(&mut immediate, KeyCode::Up);
+    let closed = navigator_press(&mut immediate, KeyCode::Char('x'));
+    assert!(matches!(
+        closed.actions.as_slice(),
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(&request.method, Method::WorkspaceClose(params)
+                if params.workspace_id == "ws_1" && !params.close_group)
+    ));
+}
+
+#[test]
+fn navigator_x_keeps_working_after_the_closed_row_disappears() {
+    let mut state = open_navigator_close_state(false, true);
+    assert_pane_close(&navigator_press(&mut state, KeyCode::Char('x')));
+    // The server drops pane_1 from the next snapshot while the panel stays open.
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.panes.retain(|pane| pane.pane_id != "pane_1");
+    projected.focused_pane_id = Some("pane_2".into());
+    projected.panes[0].focused = true;
+    state.set_snapshot(Box::new(projected));
+    let second = navigator_press(&mut state, KeyCode::Char('x'));
+    assert!(matches!(
+        second.actions.as_slice(),
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(&request.method, Method::PaneClose(target)
+                if target.pane_id == "pane_2")
+    ));
+}
+
+#[test]
+fn cancelling_a_navigator_close_returns_to_the_same_picker_state() {
+    for mouse in [false, true] {
+        let mut state = open_navigator_close_state(true, false);
+        if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+            // Search committed with Esc: the query filters the list but the box is blurred.
+            navigator.query = "client".into();
+        }
+        navigator_press(&mut state, KeyCode::Char('x'));
+        assert!(matches!(
+            state.overlay,
+            Some(ClientShellOverlay::ConfirmClose(_))
+        ));
+        if mouse {
+            state.compose(106, 24).unwrap();
+            let outside = Rect::new(1, 22, 1, 1);
+            click(&mut state, outside);
+        } else {
+            navigator_press(&mut state, KeyCode::Esc);
+        }
+        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+            panic!("picker should come back");
+        };
+        assert_eq!(navigator.query.as_str(), "client");
+        assert!(!navigator.search_focused);
+    }
+}
+
+#[test]
+fn navigator_x_refuses_a_row_while_the_active_machine_is_offline() {
+    let mut state = open_navigator_close_state(true, true);
+    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+    let refused = navigator_press(&mut state, KeyCode::Char('x'));
+    assert_no_close(&refused);
+    let notice = state
+        .visible_endpoint_notice
+        .as_ref()
+        .expect("offline refusal notice");
+    assert_eq!(notice.title, "Close needs the active machine");
+    assert!(notice.body.contains("not connected"));
+}
+
+#[test]
+fn navigator_x_types_into_the_search_box_instead_of_closing() {
+    let mut state = open_navigator_close_state(true, true);
+    navigator_press(&mut state, KeyCode::Char('/'));
+    navigator_press(&mut state, KeyCode::Char('x'));
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+        panic!("navigator");
+    };
+    assert_eq!(navigator.query.as_str(), "x");
+}

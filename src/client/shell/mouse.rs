@@ -1732,7 +1732,11 @@ impl ClientShellState {
                     outcome.repaint = true;
                 }
             } else {
-                self.overlay = None;
+                if matches!(self.overlay, Some(ClientShellOverlay::ConfirmClose(_))) {
+                    self.cancel_close_confirmation(false);
+                } else {
+                    self.overlay = None;
+                }
                 outcome.repaint = true;
             }
             return;
